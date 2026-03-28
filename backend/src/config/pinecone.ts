@@ -7,12 +7,11 @@ let pineconeClient: Pinecone | null = null;
 
 export const getPineconeClient = (): Pinecone => {
   if (!pineconeClient) {
-    pineconeClient = new Pinecone({
-      apiKey: process.env.PINECONE_API_KEY || '',
-    });
-    if(!process.env.PINECONE_API_KEY){
-     throw new Error('FATAL: Pinecone_API_key is not present')
+    const apiKey = process.env.PINECONE_API_KEY;
+    if (!apiKey) {
+      throw new Error('FATAL: PINECONE_API_KEY is not present');
     }
+    pineconeClient = new Pinecone({ apiKey });
   }
   return pineconeClient;
 };
@@ -20,8 +19,8 @@ export const getPineconeClient = (): Pinecone => {
 export const getPineconeIndex = () => {
   const pc = getPineconeClient();
   const indexName = process.env.PINECONE_INDEX_NAME;
-  if(!indexName){
-     throw new Error('FATAL: indexName is not present')
-    }
+  if (!indexName) {
+    throw new Error('FATAL: PINECONE_INDEX_NAME is not present');
+  }
   return pc.index(indexName);
 };

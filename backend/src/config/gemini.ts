@@ -5,11 +5,7 @@ dotenv.config();
 
 const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 
-if(!apiKey){
-     throw new Error('FATAL: GEMINI_apiKey is not present')
-    }
-
-export const genAI = new GoogleGenerativeAI(apiKey);
+export const genAI = new GoogleGenerativeAI(apiKey || 'unconfigured-gemini-key');
 
 export const GEMINI_CONFIG = {
   chatModel: process.env.GEMINI_CHAT_MODEL || 'gemini-3.5-flash',
