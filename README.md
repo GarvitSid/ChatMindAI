@@ -2,6 +2,8 @@
 
 **ChatMind AI College — Full-Stack RAG-Based Assistant & Student Portal**
 
+[![CI](https://github.com/GarvitSid/ChatMind-AI/actions/workflows/ci.yml/badge.svg)](https://github.com/GarvitSid/ChatMind-AI/actions/workflows/ci.yml)
+
 > An intelligent academic portal and zero-hallucination knowledge assistant built with **React 19**, **Vite**, **Tailwind CSS v4**, **Node.js/Express (TypeScript)**, **MongoDB Atlas**, **Pinecone**, and **Google Gemini API (`gemini-3.5-flash` & `gemini-embedding-001`)**.
 
 ---
@@ -125,7 +127,7 @@ cd chatmind-college
    ```bash
    npm run seed:admin
    ```
-   *(Creates `admin@chatmind.edu` / `Admin@123`)*
+   *(Uses `ADMIN_EMAIL` and `ADMIN_PASSWORD` configured in your `backend/.env`)*
 5. Start the backend development server:
    ```bash
    npm run dev
