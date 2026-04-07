@@ -29,12 +29,23 @@ export const register = async (req: Request, res: Response, next: NextFunction):
       return;
     }
 
-    if (password.length < 6) {
-      res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      res.status(400).json({ success: false, message: 'Please provide a valid email address' });
       return;
     }
 
-    const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
+    const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d).{8,}$/;
+    if (!passwordRegex.test(password)) {
+      res.status(400).json({
+        success: false,
+        message: 'Password must be at least 8 characters long and contain both letters and numbers',
+      });
+      return;
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       res.status(409).json({ success: false, message: 'An account with this email already exists' });
       return;
@@ -43,10 +54,10 @@ export const register = async (req: Request, res: Response, next: NextFunction):
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Section 6: /register endpoint strictly creates student roles
+    // Section 6: /register endpoint strictly creates student roles (silently ignores client-sent role)
     const newUser = await User.create({
       name: name.trim(),
-      email: email.toLowerCase().trim(),
+      email: normalizedEmail,
       password: hashedPassword,
       role: 'student',
     });
@@ -67,7 +78,11 @@ export const register = async (req: Request, res: Response, next: NextFunction):
         },
       },
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error && error.code === 11000) {
+      res.status(409).json({ success: false, message: 'An account with this email already exists' });
+      return;
+    }
     next(error);
   }
 };
