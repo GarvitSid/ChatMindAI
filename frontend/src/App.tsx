@@ -16,14 +16,23 @@ import { Register } from './pages/Register.js';
 import { AdminDashboard } from './pages/AdminDashboard.js';
 
 export const App: React.FC = () => {
-  const { checkAuth } = useAuthStore();
+  const { checkAuth, logout } = useAuthStore();
 
   useEffect(() => {
     api.get('/health')
       .then(() => console.log("Backend is awake!"))
       .catch(() => console.log("Waking backend..."));
     checkAuth();
-  }, [checkAuth]);
+
+    const handleUnauthorized = () => {
+      logout();
+    };
+
+    window.addEventListener('auth:unauthorized', handleUnauthorized);
+    return () => {
+      window.removeEventListener('auth:unauthorized', handleUnauthorized);
+    };
+  }, [checkAuth, logout]);
 
   return (
     <Router>

@@ -32,9 +32,13 @@ api.interceptors.response.use(
       'An unexpected error occurred. Please try again.';
     
     // Auto-logout if token is expired/invalid (401)
-    if (error.response?.status === 401 && !error.config.url.includes('/auth/login')) {
+    if (error.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
       localStorage.removeItem('chatmind_auth_token');
       localStorage.removeItem('chatmind_auth_user');
+
+      if (!error.config?.url?.includes('/auth/me') && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+      }
     }
 
     return Promise.reject(new Error(message));
