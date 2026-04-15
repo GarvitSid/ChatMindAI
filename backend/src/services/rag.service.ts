@@ -1,7 +1,17 @@
 import pdfParse from 'pdf-parse';
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
+import { TaskType } from '@google/generative-ai';
 import { genAI, GEMINI_CONFIG } from '../config/gemini.js';
 import { getPineconeIndex } from '../config/pinecone.js';
+import { RAG_CONFIG } from '../config/rag.config.js';
+
+export class IngestionError extends Error {
+  public statusCode: number = 502;
+  constructor(message: string) {
+    super(message);
+    this.name = 'IngestionError';
+  }
+}
 
 export interface ProcessedDocumentResult {
   chunkCount: number;
@@ -13,58 +23,135 @@ export interface RagAnswerResult {
   sources: string[];
 }
 
+/**
+ * Normalizes vector using Euclidean (L2) norm.
+ * Required when using reduced dimensionality (MRL) to preserve cosine distance geometry.
+ */
+export const normalizeL2 = (values: number[]): number[] => {
+  const norm = Math.sqrt(values.reduce((sum, val) => sum + val * val, 0));
+  return norm === 0 ? values : values.map((val) => val / norm);
+};
+
+/**
+ * Checks whether an error from Google AI API is transient and retryable (rate limits or service outages)
+ */
+export const isRetryable = (error: any): boolean => {
+  const status = error?.status || error?.statusCode;
+  if (status === 429 || status === 503) {
+    return true;
+  }
+  const message = error?.message || String(error);
+  return (
+    message.includes('RESOURCE_EXHAUSTED') ||
+    message.includes('UNAVAILABLE') ||
+    error?.code === 'ECONNRESET' ||
+    error?.code === 'ETIMEDOUT'
+  );
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export class RagService {
   private static splitter = new RecursiveCharacterTextSplitter({
-    chunkSize: 1000,
-    chunkOverlap: 200,
+    chunkSize: RAG_CONFIG.chunkSize,
+    chunkOverlap: RAG_CONFIG.chunkOverlap,
   });
 
   /**
-   * Generates embedding for text using Google Gemini models with multi-model fallback
+   * Embeds chunks in batches of 20 with exponential backoff on transient errors.
+   * Throws IngestionError on complete failure (zero placeholder random vectors).
    */
-  private static async getEmbeddingWithFallback(text: string): Promise<number[]> {
-    const modelsToTry = [
-      GEMINI_CONFIG.embeddingModel,
-      ...GEMINI_CONFIG.fallbackEmbeddingModels.filter((m) => m !== GEMINI_CONFIG.embeddingModel),
-    ];
+  public static async batchEmbedChunks(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) return [];
 
-    let lastError: any = null;
+    const allEmbeddings: number[][] = [];
+    const model = genAI.getGenerativeModel({ model: GEMINI_CONFIG.embeddingModel });
 
-    for (const modelName of modelsToTry) {
-      try {
-        const model = genAI.getGenerativeModel({ model: modelName });
-        let result: any = null;
-        
+    for (let i = 0; i < texts.length; i += RAG_CONFIG.embeddingBatchSize) {
+      const batch = texts.slice(i, i + RAG_CONFIG.embeddingBatchSize);
+
+      let lastError: any = null;
+      let batchSuccess = false;
+
+      for (let attempt = 0; attempt <= RAG_CONFIG.maxEmbeddingRetries; attempt++) {
         try {
-          // Standard SDK call
-          result = await model.embedContent(text);
-        } catch {
-          // Fallback object call with outputDimensionality for gemini-embedding-001
-          result = await model.embedContent({
+          const requests = batch.map((text) => ({
             content: { role: 'user', parts: [{ text }] },
-            outputDimensionality: GEMINI_CONFIG.embeddingDimensions,
-          } as any);
-        }
+            taskType: TaskType.RETRIEVAL_DOCUMENT,
+            outputDimensionality: RAG_CONFIG.embeddingDimensions,
+          }));
 
-        if (result && result.embedding && result.embedding.values) {
-          let values: number[] = result.embedding.values;
-          // Ensure dimensionality matches index (truncate or pad to 768 if needed)
-          if (values.length > GEMINI_CONFIG.embeddingDimensions) {
-            values = values.slice(0, GEMINI_CONFIG.embeddingDimensions);
-          } else if (values.length < GEMINI_CONFIG.embeddingDimensions) {
-            values = [...values, ...new Array(GEMINI_CONFIG.embeddingDimensions - values.length).fill(0)];
+          const response = await model.batchEmbedContents({ requests });
+
+          if (!response || !response.embeddings || response.embeddings.length !== batch.length) {
+            throw new IngestionError(
+              `Embedding service returned unexpected result count: expected ${batch.length}, received ${response?.embeddings?.length || 0}`
+            );
           }
-          return values;
+
+          for (let j = 0; j < response.embeddings.length; j++) {
+            const rawVector = response.embeddings[j]?.values;
+            if (!rawVector) {
+              throw new IngestionError('Embedding vector values missing in response');
+            }
+
+            // Verify strict dimensionality: never pad or truncate silently
+            if (rawVector.length !== RAG_CONFIG.embeddingDimensions) {
+              throw new IngestionError(
+                `Embedding dimension mismatch: expected ${RAG_CONFIG.embeddingDimensions}, received ${rawVector.length}`
+              );
+            }
+
+            allEmbeddings.push(normalizeL2(rawVector));
+          }
+
+          batchSuccess = true;
+          break;
+        } catch (err: any) {
+          lastError = err;
+          if (!isRetryable(err) || attempt === RAG_CONFIG.maxEmbeddingRetries) {
+            break;
+          }
+          const backoff = RAG_CONFIG.initialBackoffMs * Math.pow(2, attempt);
+          await sleep(backoff);
         }
-      } catch (err: any) {
-        lastError = err;
+      }
+
+      if (!batchSuccess) {
+        throw new IngestionError(
+          `Failed to generate embeddings for batch [${i}..${i + batch.length}]: ${lastError?.message || lastError}`
+        );
       }
     }
 
-    console.warn(`[RAG Warning] Gemini embedding failed for models (${modelsToTry.join(', ')}). Error:`, lastError?.message || lastError);
+    return allEmbeddings;
+  }
 
-    // Resilient fallback vector so application continues functioning
-    return new Array(GEMINI_CONFIG.embeddingDimensions).fill(0).map(() => Math.random() * 0.01);
+  /**
+   * Generates embedding for query text with dimension verification and L2 normalization.
+   * Throws on failure; never generates random vectors.
+   */
+  public static async getEmbeddingForQuery(text: string): Promise<number[]> {
+    const model = genAI.getGenerativeModel({ model: GEMINI_CONFIG.embeddingModel });
+    try {
+      const result = await model.embedContent({
+        content: { role: 'user', parts: [{ text }] },
+        taskType: TaskType.RETRIEVAL_QUERY,
+        outputDimensionality: RAG_CONFIG.embeddingDimensions,
+      } as any);
+
+      const values = result?.embedding?.values;
+      if (!values || values.length !== RAG_CONFIG.embeddingDimensions) {
+        throw new IngestionError(
+          `Query embedding dimension mismatch: expected ${RAG_CONFIG.embeddingDimensions}, received ${values?.length || 0}`
+        );
+      }
+
+      return normalizeL2(values);
+    } catch (err: any) {
+      if (err instanceof IngestionError) throw err;
+      throw new IngestionError(`Failed to generate query embedding: ${err?.message || err}`);
+    }
   }
 
   /**
@@ -120,20 +207,26 @@ export class RagService {
     ) {
       return buffer.toString('utf-8');
     }
-    throw new Error('Unsupported file format. Only .pdf and .txt are allowed.');
+    const err = new Error('Unsupported file format. Only .pdf and .txt are allowed.');
+    (err as any).statusCode = 400;
+    throw err;
   }
 
   /**
-   * Splits text into chunks, generates Gemini embeddings, and upserts to Pinecone
+   * Splits text into chunks, generates batched Gemini embeddings, and upserts to Pinecone.
+   * If any Pinecone upsert fails, executes compensating deletion for uploaded vectors and throws IngestionError.
    */
   public static async processAndIndexDocument(
     documentId: string,
     filename: string,
     rawText: string
   ): Promise<ProcessedDocumentResult> {
+    const startTime = Date.now();
     const cleanedText = rawText.trim();
     if (!cleanedText) {
-      throw new Error('Document contains no extractable text.');
+      const err = new Error('Document contains no extractable text.');
+      (err as any).statusCode = 400;
+      throw err;
     }
 
     // Split text into chunks
@@ -144,23 +237,22 @@ export class RagService {
 
     const chunkCount = chunkDocs.length;
     if (chunkCount === 0) {
-      throw new Error('Could not generate text chunks from document.');
+      const err = new Error('Could not generate text chunks from document.');
+      (err as any).statusCode = 400;
+      throw err;
     }
 
+    // Generate embeddings in batches of 20 with retry and dimension verification
+    const chunkTexts = chunkDocs.map((c) => c.pageContent);
+    const embeddings = await this.batchEmbedChunks(chunkTexts);
+
     const vectorsToUpsert = [];
-
-    // Generate embeddings with fallback
     for (let i = 0; i < chunkDocs.length; i++) {
-      const chunkText = chunkDocs[i].pageContent;
-      const chunkId = `${documentId}_chunk_${i}`;
-
-      const embedding = await this.getEmbeddingWithFallback(chunkText);
-
       vectorsToUpsert.push({
-        id: chunkId,
-        values: embedding,
+        id: `${documentId}_chunk_${i}`,
+        values: embeddings[i],
         metadata: {
-          text: chunkText,
+          text: chunkDocs[i].pageContent,
           filename: filename,
           documentId: documentId,
           chunkIndex: i,
@@ -168,18 +260,32 @@ export class RagService {
       });
     }
 
-    // Upsert into Pinecone
+    // Upsert into Pinecone in batches, tracking uploaded IDs for compensating rollback
+    const uploadedChunkIds: string[] = [];
+    const index = getPineconeIndex();
+
     try {
-      const index = getPineconeIndex();
-      // Upsert in batches of 50
-      for (let i = 0; i < vectorsToUpsert.length; i += 50) {
-        const batch = vectorsToUpsert.slice(i, i + 50);
+      for (let i = 0; i < vectorsToUpsert.length; i += RAG_CONFIG.pineconeUpsertBatchSize) {
+        const batch = vectorsToUpsert.slice(i, i + RAG_CONFIG.pineconeUpsertBatchSize);
         await index.upsert(batch);
+        uploadedChunkIds.push(...batch.map((v) => v.id));
       }
-      console.log(`[RAG Index] Successfully indexed ${vectorsToUpsert.length} chunks for ${filename} with Gemini embeddings`);
-    } catch (pineconeErr) {
-      console.warn(`[RAG Warning] Pinecone upsert failed (check API keys/index):`, pineconeErr);
+    } catch (pineconeErr: any) {
+      // Compensating Rollback: Clean up any vectors that were partially uploaded
+      if (uploadedChunkIds.length > 0) {
+        try {
+          await index.deleteMany(uploadedChunkIds);
+        } catch (cleanupErr) {
+          console.error(`[Compensating Rollback Failed] Failed to clean up partial vectors for doc ${documentId}:`, cleanupErr);
+        }
+      }
+      throw new IngestionError(`Pinecone vector indexing failed: ${pineconeErr?.message || pineconeErr}`);
     }
+
+    const elapsedMs = Date.now() - startTime;
+    console.log(
+      `[RAG Performance] Indexed ${chunkCount} chunks for "${filename}" in ${elapsedMs}ms (${(elapsedMs / chunkCount).toFixed(1)}ms/chunk)`
+    );
 
     return {
       chunkCount,
@@ -191,25 +297,20 @@ export class RagService {
    * Deletes all vector chunks associated with document from Pinecone
    */
   public static async deleteDocumentVectors(documentId: string, chunkCount: number, filename?: string): Promise<void> {
-    try {
-      const index = getPineconeIndex();
-
-      // Delete vector IDs
-      const idsToDelete: string[] = [];
-      for (let i = 0; i < Math.max(chunkCount, 500); i++) {
-        idsToDelete.push(`${documentId}_chunk_${i}`);
-      }
-
-      // Batch delete
-      for (let i = 0; i < idsToDelete.length; i += 100) {
-        const batch = idsToDelete.slice(i, i + 100);
-        await index.deleteMany(batch);
-      }
-
-      console.log(`[RAG Delete] Deleted vector chunks for document ${documentId} (${filename || ''})`);
-    } catch (err) {
-      console.warn(`[RAG Warning] Could not delete vectors from Pinecone:`, err);
+    const index = getPineconeIndex();
+    const idsToDelete: string[] = [];
+    for (let i = 0; i < chunkCount; i++) {
+      idsToDelete.push(`${documentId}_chunk_${i}`);
     }
+
+    if (idsToDelete.length === 0) return;
+
+    for (let i = 0; i < idsToDelete.length; i += 100) {
+      const batch = idsToDelete.slice(i, i + 100);
+      await index.deleteMany(batch);
+    }
+
+    console.log(`[RAG Delete] Deleted ${idsToDelete.length} vector chunks for document ${documentId} (${filename || ''})`);
   }
 
   /**
@@ -224,7 +325,7 @@ export class RagService {
       };
     }
 
-    const queryVector = await this.getEmbeddingWithFallback(trimmedQuestion);
+    const queryVector = await this.getEmbeddingForQuery(trimmedQuestion);
 
     // Query Pinecone for top-3 most similar chunks
     let retrievedChunks: { text: string; filename: string }[] = [];
