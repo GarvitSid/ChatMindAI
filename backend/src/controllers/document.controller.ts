@@ -1,4 +1,5 @@
 import { Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import multer from 'multer';
 import { DocumentModel } from '../models/Document.js';
 import { RagService } from '../services/rag.service.js';
@@ -16,7 +17,9 @@ export const uploadMiddleware = multer({
     if (isPdf || isTxt) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only .pdf and .txt files are allowed.'));
+      const err = new Error('Invalid file type. Only .pdf and .txt files are allowed.');
+      (err as any).statusCode = 400;
+      cb(err);
     }
   },
 }).single('file');
@@ -45,7 +48,7 @@ export const uploadDocument = async (req: AuthRequest, res: Response, next: Next
 
     const { originalname, size, buffer, mimetype } = req.file;
 
-    // Check duplicate filename in MongoDB
+    // Check duplicate filename in MongoDB up-front
     const existingDoc = await DocumentModel.findOne({ filename: originalname });
     if (existingDoc) {
       res.status(409).json({
@@ -58,28 +61,45 @@ export const uploadDocument = async (req: AuthRequest, res: Response, next: Next
     // Extract text strictly from memory buffer
     const rawText = await RagService.extractTextFromBuffer(buffer, mimetype, originalname);
 
-    // Create preliminary document in MongoDB
-    const newDoc = await DocumentModel.create({
-      filename: originalname,
-      fileSize: size,
-      chunkCount: 0,
-      uploadedBy: req.user!._id,
-    });
+    // Pre-generate document ID for coordinated two-phase write
+    const documentId = new mongoose.Types.ObjectId();
 
-    // Process chunks & Pinecone index
+    // 1. Process & Index into Pinecone FIRST
     const { chunkCount } = await RagService.processAndIndexDocument(
-      newDoc._id.toString(),
+      documentId.toString(),
       originalname,
       rawText
     );
 
-    newDoc.chunkCount = chunkCount;
-    await newDoc.save();
+    // 2. Persist to MongoDB SECOND
+    let createdDoc;
+    try {
+      createdDoc = await DocumentModel.create({
+        _id: documentId,
+        filename: originalname,
+        fileSize: size,
+        chunkCount,
+        uploadedBy: req.user!._id,
+      });
+    } catch (mongoErr: any) {
+      // If MongoDB write fails (e.g. concurrent race condition with duplicate code 11000):
+      // Rollback the vectors we just upserted to Pinecone!
+      await RagService.deleteDocumentVectors(documentId.toString(), chunkCount, originalname);
+
+      if (mongoErr && mongoErr.code === 11000) {
+        res.status(409).json({
+          success: false,
+          message: `A document with the filename "${originalname}" already exists. Please rename or delete the existing document.`,
+        });
+        return;
+      }
+      throw mongoErr;
+    }
 
     res.status(201).json({
       success: true,
       message: `Document "${originalname}" uploaded and indexed successfully into ${chunkCount} chunks.`,
-      data: newDoc,
+      data: createdDoc,
     });
   } catch (error) {
     next(error);
