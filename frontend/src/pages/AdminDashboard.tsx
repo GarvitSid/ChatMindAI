@@ -84,6 +84,7 @@ export const AdminDashboard: React.FC = () => {
     try {
       const response = await api.post('/documents/upload', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 120000,
       });
 
       toast.success(response.data.message || 'Document indexed successfully!', { id: toastId });
@@ -254,13 +255,18 @@ export const AdminDashboard: React.FC = () => {
                 ? 'border-indigo-500 bg-indigo-500/10'
                 : 'border-slate-800 bg-slate-950/50 hover:border-slate-700'
             }`}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              if (!isUploading) {
+                fileInputRef.current?.click();
+              }
+            }}
           >
             <input
               ref={fileInputRef}
               type="file"
               accept=".pdf,.txt"
               id="admin-file-upload-input"
+              disabled={isUploading}
               className="hidden"
               onChange={(e) => {
                 if (e.target.files && e.target.files[0]) {
