@@ -294,20 +294,52 @@ export class RagService {
   }
 
   /**
-   * Deletes all vector chunks associated with document from Pinecone
+   * Deletes all vector chunks associated with document from Pinecone using exact chunk IDs.
+   * Purges vectors in batches of 100 with exponential backoff retries.
+   * If Pinecone deletion fails after retries, logs error and throws IngestionError (502).
    */
   public static async deleteDocumentVectors(documentId: string, chunkCount: number, filename?: string): Promise<void> {
-    const index = getPineconeIndex();
+    const count = Math.max(0, chunkCount || 0);
+    if (count === 0) {
+      console.log(`[RAG Delete] Skipping Pinecone delete for document ${documentId} (0 chunks recorded)`);
+      return;
+    }
+
     const idsToDelete: string[] = [];
-    for (let i = 0; i < chunkCount; i++) {
+    for (let i = 0; i < count; i++) {
       idsToDelete.push(`${documentId}_chunk_${i}`);
     }
 
-    if (idsToDelete.length === 0) return;
+    const index = getPineconeIndex();
+    const batchSize = RAG_CONFIG.pineconeDeleteBatchSize;
 
-    for (let i = 0; i < idsToDelete.length; i += 100) {
-      const batch = idsToDelete.slice(i, i + 100);
-      await index.deleteMany(batch);
+    for (let i = 0; i < idsToDelete.length; i += batchSize) {
+      const batch = idsToDelete.slice(i, i + batchSize);
+      let attempts = 0;
+      let success = false;
+      let lastError: any = null;
+
+      while (attempts < RAG_CONFIG.maxEmbeddingRetries && !success) {
+        try {
+          attempts++;
+          await index.deleteMany(batch);
+          success = true;
+        } catch (err: any) {
+          lastError = err;
+          if (attempts < RAG_CONFIG.maxEmbeddingRetries) {
+            const delay = RAG_CONFIG.initialBackoffMs * Math.pow(2, attempts - 1);
+            await sleep(delay);
+          }
+        }
+      }
+
+      if (!success) {
+        console.error(
+          `[RAG Delete Error] Failed to delete vector batch [${i}..${i + batch.length - 1}] for document ${documentId} (${filename || ''}):`,
+          lastError
+        );
+        throw new IngestionError('Failed to remove document vectors. The document was kept so you can retry.');
+      }
     }
 
     console.log(`[RAG Delete] Deleted ${idsToDelete.length} vector chunks for document ${documentId} (${filename || ''})`);

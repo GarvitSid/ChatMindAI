@@ -6,4 +6,5 @@ export const RAG_CONFIG = {
   maxEmbeddingRetries: 3,
   initialBackoffMs: process.env.NODE_ENV === 'test' ? 1 : 500,
   pineconeUpsertBatchSize: 50,
+  pineconeDeleteBatchSize: 100,
 } as const;
