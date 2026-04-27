@@ -110,17 +110,25 @@ export const deleteDocument = async (req: AuthRequest, res: Response, next: Next
   try {
     const { id } = req.params;
 
+    // Strict 24-hex validation prevents BSON CastError and 12-char false positives
+    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+      res.status(404).json({ success: false, message: 'Document not found' });
+      return;
+    }
+
     const doc = await DocumentModel.findById(id);
     if (!doc) {
       res.status(404).json({ success: false, message: 'Document not found' });
       return;
     }
 
-    // Cascading deletion: Pinecone vector removal
+    // Cascading deletion: Pinecone vector removal FIRST
+    // If this throws IngestionError (502), next(error) produces a 502 response
+    // and doc.deleteOne() is never called, keeping the MongoDB record intact for retry.
     await RagService.deleteDocumentVectors(doc._id.toString(), doc.chunkCount, doc.filename);
 
-    // Delete MongoDB document
-    await DocumentModel.findByIdAndDelete(id);
+    // Delete MongoDB document SECOND using doc.deleteOne()
+    await doc.deleteOne();
 
     res.status(200).json({
       success: true,
