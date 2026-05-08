@@ -330,6 +330,7 @@ export const ChatDrawer: React.FC = () => {
                     onChange={(e) => setInputMessage(e.target.value)}
                     placeholder="Ask about admissions, courses, cutoffs, syllabus..."
                     disabled={isSending}
+                    maxLength={1000}
                     className="w-full py-3.5 pl-4 pr-12 rounded-xl bg-slate-950 border border-slate-800 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50 transition-all"
                   />
                   <button
@@ -348,7 +349,7 @@ export const ChatDrawer: React.FC = () => {
                 <div className="flex items-center justify-between text-[11px] text-slate-400 mt-2 px-1">
                   <span className="flex items-center gap-1">
                     <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                    Zero hallucination policy: answers strictly constrained to uploaded documents
+                    Answers are limited to the uploaded college documents.
                   </span>
                   <span className="hidden sm:inline">Press Enter to send</span>
                 </div>

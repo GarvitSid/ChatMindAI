@@ -5,13 +5,14 @@ import { genAI, GEMINI_CONFIG } from '../config/gemini.js';
 import { getPineconeIndex } from '../config/pinecone.js';
 import { RAG_CONFIG } from '../config/rag.config.js';
 
-export class IngestionError extends Error {
+export class RagServiceError extends Error {
   public statusCode: number = 502;
   constructor(message: string) {
     super(message);
-    this.name = 'IngestionError';
+    this.name = 'RagServiceError';
   }
 }
+export const IngestionError = RagServiceError;
 
 export interface ProcessedDocumentResult {
   chunkCount: number;
@@ -185,13 +186,8 @@ export class RagService {
       }
     }
 
-    console.warn(`[RAG Warning] Gemini chat generation failed across models (${modelsToTry.join(', ')}):`, lastError?.message || lastError);
-
-    if (lastError?.message?.includes('404') || lastError?.status === 404) {
-      return "Relevant information is unavailable in the current knowledge base. (Note: Your GEMINI_API_KEY returned a 404 from Google. Please verify that the Generative Language API is enabled for this key in Google AI Studio / Google Cloud).";
-    }
-
-    return "Relevant information is unavailable in the current knowledge base.";
+    console.error(`[RAG Error] Gemini chat generation failed across models (${modelsToTry.join(', ')}):`, lastError?.message || lastError);
+    throw new RagServiceError('AI generation service is currently unavailable. Please try again shortly.');
   }
 
   /**
@@ -359,37 +355,49 @@ export class RagService {
 
     const queryVector = await this.getEmbeddingForQuery(trimmedQuestion);
 
-    // Query Pinecone for top-3 most similar chunks
-    let retrievedChunks: { text: string; filename: string }[] = [];
+    // Query Pinecone for top candidate chunks
+    let queryResponse;
     try {
       const index = getPineconeIndex();
-      const queryResponse = await index.query({
+      queryResponse = await index.query({
         vector: queryVector,
-        topK: 3,
+        topK: RAG_CONFIG.topK,
         includeMetadata: true,
       });
-
-      if (queryResponse.matches && queryResponse.matches.length > 0) {
-        retrievedChunks = queryResponse.matches
-          .filter((match) => match.metadata && match.metadata.text)
-          .map((match) => ({
-            text: String(match.metadata?.text || ''),
-            filename: String(match.metadata?.filename || 'Document'),
-          }));
-      }
-    } catch (pineErr) {
-      console.warn(`[RAG Warning] Pinecone retrieval failed:`, pineErr);
+    } catch (pineErr: any) {
+      console.error('[RAG Error] Pinecone query failed:', pineErr);
+      throw new RagServiceError('Vector search service is currently unavailable. Please try again shortly.');
     }
 
-    // Build context
-    const contextText = retrievedChunks.length > 0
-      ? retrievedChunks.map((c, idx) => `[Chunk ${idx + 1} from ${c.filename}]:\n${c.text}`).join('\n\n')
-      : 'No matching documents found in the knowledge base.';
+    // Similarity score threshold gate: discard matches below cutoff
+    const threshold = RAG_CONFIG.similarityThreshold;
+    const qualifyingMatches = (queryResponse?.matches || []).filter(
+      (match) => (match.score ?? 0) >= threshold && match.metadata && match.metadata.text
+    );
 
-    // Extract unique source filenames
+    // Zero-Quota Refusal: if 0 chunks pass threshold, return refusal without calling LLM
+    if (qualifyingMatches.length === 0) {
+      console.log(`[RAG Retrieval] 0 matches passed similarity threshold (${threshold}). Refusing question without calling LLM.`);
+      return {
+        answer: RAG_CONFIG.refusalMessage,
+        sources: [],
+      };
+    }
+
+    const retrievedChunks = qualifyingMatches.map((match) => ({
+      text: String(match.metadata?.text || ''),
+      filename: String(match.metadata?.filename || 'Document'),
+    }));
+
+    // Extract deduplicated unique source filenames
     const uniqueSources = Array.from(new Set(retrievedChunks.map((c) => c.filename))).filter(Boolean);
 
-    const systemPrompt = `You are a helpful college assistant for ChatMind AI College. Answer the user's question ONLY using the provided Context. Do not use outside knowledge. If the answer is not contained in the Context, explicitly state: 'Relevant information is unavailable in the current knowledge base.' Be concise.`;
+    // Build context
+    const contextText = retrievedChunks
+      .map((c, idx) => `[Chunk ${idx + 1} from ${c.filename}]:\n${c.text}`)
+      .join('\n\n');
+
+    const systemPrompt = `You are a helpful college assistant for ChatMind AI College. Answer the user's question ONLY using the provided Context. Do not use outside knowledge. If the answer is not contained in the Context, explicitly state: '${RAG_CONFIG.refusalMessage}' Be concise.`;
 
     const userPrompt = `Context:\n${contextText}\n\nQuestion: ${trimmedQuestion}\n\nAnswer:`;
 

@@ -3,6 +3,7 @@ import { ChatSession } from '../models/ChatSession.js';
 import { ChatMessage } from '../models/ChatMessage.js';
 import { RagService } from '../services/rag.service.js';
 import { AuthRequest } from '../middlewares/auth.middleware.js';
+import { RAG_CONFIG } from '../config/rag.config.js';
 
 export const getSessions = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -63,44 +64,69 @@ export const askQuestion = async (req: AuthRequest, res: Response, next: NextFun
   try {
     const { sessionId, message } = req.body;
 
+    // 1. Validate question presence and length bounds
     if (!message || typeof message !== 'string' || !message.trim()) {
       res.status(400).json({ success: false, message: 'Question message is required' });
       return;
     }
 
-    let currentSession = null;
-
-    if (sessionId) {
-      currentSession = await ChatSession.findOne({ _id: sessionId, userId: req.user!._id });
+    const trimmedMessage = message.trim();
+    if (trimmedMessage.length > RAG_CONFIG.maxQuestionLength) {
+      res.status(400).json({
+        success: false,
+        message: `Question exceeds maximum allowed length of ${RAG_CONFIG.maxQuestionLength} characters`,
+      });
+      return;
     }
 
-    // Auto-create session if not provided or not found
+    // 2. Early session validation BEFORE running RAG (prevents burning embedding API quota on invalid sessions)
+    let currentSession = null;
+    if (sessionId) {
+      if (!/^[0-9a-fA-F]{24}$/.test(sessionId)) {
+        res.status(404).json({ success: false, message: 'Chat session not found' });
+        return;
+      }
+      currentSession = await ChatSession.findOne({ _id: sessionId, userId: req.user!._id });
+      if (!currentSession) {
+        res.status(404).json({ success: false, message: 'Chat session not found' });
+        return;
+      }
+    }
+
+    // 3. Execute RAG Pipeline FIRST: query embedding, threshold gate, and Gemini generation
+    // If this throws (e.g. 502), execution jumps straight to next(error) leaving 0 messages in MongoDB
+    const { answer, sources } = await RagService.answerQuestion(trimmedMessage);
+
+    // 4. Persist messages SECOND: only after answer generation succeeds
     if (!currentSession) {
-      const generatedTitle = message.trim().slice(0, 40) + (message.length > 40 ? '...' : '');
+      const generatedTitle = trimmedMessage.slice(0, 40) + (trimmedMessage.length > 40 ? '...' : '');
       currentSession = await ChatSession.create({
         userId: req.user!._id,
         title: generatedTitle,
       });
     }
 
-    // Persist user question
-    const userMessage = await ChatMessage.create({
-      sessionId: currentSession._id,
-      role: 'user',
-      content: message.trim(),
-      sources: [],
-    });
-
-    // Execute RAG Pipeline with strict prompt
-    const { answer, sources } = await RagService.answerQuestion(message.trim());
-
-    // Persist AI response
-    const aiMessage = await ChatMessage.create({
-      sessionId: currentSession._id,
-      role: 'ai',
-      content: answer,
-      sources,
-    });
+    // Single batch write with explicit timestamp offsets for deterministic ordering
+    const now = Date.now();
+    const [userMessage, aiMessage] = await ChatMessage.insertMany(
+      [
+        {
+          sessionId: currentSession._id,
+          role: 'user',
+          content: trimmedMessage,
+          sources: [],
+          createdAt: new Date(now),
+        },
+        {
+          sessionId: currentSession._id,
+          role: 'ai',
+          content: answer,
+          sources,
+          createdAt: new Date(now + 10),
+        },
+      ],
+      { ordered: true }
+    );
 
     res.status(200).json({
       success: true,
