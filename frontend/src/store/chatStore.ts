@@ -28,7 +28,7 @@ interface ChatState {
   closeDrawer: () => void;
   toggleDrawer: () => void;
   
-  fetchSessions: () => Promise<void>;
+  fetchSessions: (autoSelect?: boolean) => Promise<void>;
   createSession: (title?: string) => Promise<string>;
   selectSession: (sessionId: string) => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
@@ -45,7 +45,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   openDrawer: () => {
     set({ isDrawerOpen: true });
-    get().fetchSessions();
+    get().fetchSessions(true);
   },
 
   closeDrawer: () => set({ isDrawerOpen: false }),
@@ -54,7 +54,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const nextState = !get().isDrawerOpen;
     set({ isDrawerOpen: nextState });
     if (nextState) {
-      get().fetchSessions();
+      get().fetchSessions(true);
     }
   },
 
@@ -62,14 +62,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ currentSessionId: null, messages: [] });
   },
 
-  fetchSessions: async () => {
+  fetchSessions: async (autoSelect = false) => {
     try {
       const response = await api.get('/chat/sessions');
       const sessions = response.data.data || [];
       set({ sessions });
       
-      // If no current session is active and we have sessions, select the latest
-      if (!get().currentSessionId && sessions.length > 0) {
+      // Auto-select latest session ONLY when explicitly requested (e.g. on initial open)
+      if (autoSelect && !get().currentSessionId && sessions.length > 0) {
         get().selectSession(sessions[0]._id);
       }
     } catch (error) {
@@ -143,8 +143,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
       });
 
-      // Refresh sessions to get updated titles
-      get().fetchSessions();
+      // Refresh sessions to get updated titles without auto-switching
+      get().fetchSessions(false);
     } catch (error) {
       console.error('Error sending message:', error);
       const errorMsg: Message = {

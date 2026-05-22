@@ -4,6 +4,7 @@ import { ChatMessage } from '../models/ChatMessage.js';
 import { RagService } from '../services/rag.service.js';
 import { AuthRequest } from '../middlewares/auth.middleware.js';
 import { RAG_CONFIG } from '../config/rag.config.js';
+import { isValidObjectId } from '../utils/validation.js';
 
 export const getSessions = async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -40,13 +41,18 @@ export const getSessionById = async (req: AuthRequest, res: Response, next: Next
   try {
     const { id } = req.params;
 
+    if (!isValidObjectId(id)) {
+      res.status(404).json({ success: false, message: 'Chat session not found' });
+      return;
+    }
+
     const session = await ChatSession.findOne({ _id: id, userId: req.user!._id });
     if (!session) {
       res.status(404).json({ success: false, message: 'Chat session not found' });
       return;
     }
 
-    const messages = await ChatMessage.find({ sessionId: session._id }).sort({ createdAt: 1 });
+    const messages = await ChatMessage.find({ sessionId: session._id }).sort({ createdAt: 1, _id: 1 });
 
     res.status(200).json({
       success: true,
@@ -82,7 +88,7 @@ export const askQuestion = async (req: AuthRequest, res: Response, next: NextFun
     // 2. Early session validation BEFORE running RAG (prevents burning embedding API quota on invalid sessions)
     let currentSession = null;
     if (sessionId) {
-      if (!/^[0-9a-fA-F]{24}$/.test(sessionId)) {
+      if (!isValidObjectId(sessionId)) {
         res.status(404).json({ success: false, message: 'Chat session not found' });
         return;
       }

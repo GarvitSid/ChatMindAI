@@ -4,6 +4,7 @@ import multer from 'multer';
 import { DocumentModel } from '../models/Document.js';
 import { RagService } from '../services/rag.service.js';
 import { AuthRequest } from '../middlewares/auth.middleware.js';
+import { isValidObjectId } from '../utils/validation.js';
 
 // Configure multer memory storage with 5MB limit and format filter
 export const uploadMiddleware = multer({
@@ -111,7 +112,7 @@ export const deleteDocument = async (req: AuthRequest, res: Response, next: Next
     const { id } = req.params;
 
     // Strict 24-hex validation prevents BSON CastError and 12-char false positives
-    if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+    if (!isValidObjectId(id)) {
       res.status(404).json({ success: false, message: 'Document not found' });
       return;
     }

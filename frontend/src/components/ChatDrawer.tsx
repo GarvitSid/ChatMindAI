@@ -29,9 +29,9 @@ export const ChatDrawer: React.FC = () => {
     isSending,
     isLoadingHistory,
     fetchSessions,
-    createSession,
     selectSession,
     sendMessage,
+    clearActiveSession,
   } = useChatStore();
 
   const [inputMessage, setInputMessage] = useState<string>('');
@@ -49,7 +49,7 @@ export const ChatDrawer: React.FC = () => {
   // Initial load of sessions when drawer opens
   useEffect(() => {
     if (isDrawerOpen && isAuthenticated) {
-      fetchSessions();
+      fetchSessions(true);
     }
   }, [isDrawerOpen, isAuthenticated, fetchSessions]);
 
@@ -83,12 +83,8 @@ export const ChatDrawer: React.FC = () => {
     setInputMessage(prompt);
   };
 
-  const handleNewChat = async () => {
-    try {
-      await createSession('New Conversation');
-    } catch {
-      toast.error('Failed to create new session');
-    }
+  const handleNewChat = () => {
+    clearActiveSession();
   };
 
   return (
