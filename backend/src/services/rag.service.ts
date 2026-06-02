@@ -183,6 +183,7 @@ export class RagService {
         }
       } catch (err: any) {
         lastError = err;
+        console.warn(`[RAG Model Fallback] Model "${modelName}" failed (${err?.message || err}). Attempting next candidate...`);
       }
     }
 

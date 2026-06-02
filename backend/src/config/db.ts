@@ -9,8 +9,12 @@ export const connectDB = async (): Promise<void> => {
     throw new Error('FATAL: MONGO_URI is not present');
   }
 
+  const timeoutMs = process.env.MONGO_TIMEOUT_MS
+    ? parseInt(process.env.MONGO_TIMEOUT_MS, 10)
+    : 10000;
+
   const conn = await mongoose.connect(mongoUri, {
-    serverSelectionTimeoutMS: 2500,
+    serverSelectionTimeoutMS: timeoutMs,
   });
   console.log(`[MongoDB] Connected: ${conn.connection.host}`);
 };

@@ -8,6 +8,8 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "seed:admin": "tsx src/scripts/seedAdmin.ts",
+    "eval:seed": "tsx src/scripts/seedEvalNamespace.ts",
+    "eval:run": "tsx src/scripts/runEval.ts",
     "test": "jest"
   },
   "dependencies": {

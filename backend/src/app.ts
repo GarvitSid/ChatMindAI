@@ -15,7 +15,18 @@ dotenv.config();
 
 const app = express();
 app.set('trust proxy', 1);
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
+const clientUrls = (process.env.CLIENT_URL || 'http://localhost:5173')
+  .split(',')
+  .map((url) => url.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
+const allowedOrigins = Array.from(
+  new Set([
+    ...clientUrls,
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+  ])
+);
 
 // 1. Security Headers
 app.use(helmet());
@@ -23,7 +34,7 @@ app.use(helmet());
 // 2. CORS Restriction
 app.use(
   cors({
-    origin: [CLIENT_URL, 'http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: allowedOrigins,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
