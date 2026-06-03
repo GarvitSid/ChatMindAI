@@ -8,6 +8,7 @@ export interface Message {
   content: string;
   sources: string[];
   createdAt: string;
+  isError?: boolean;
 }
 
 export interface Session {
@@ -153,6 +154,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         content: error instanceof Error ? error.message : 'Failed to retrieve response from knowledge base.',
         sources: [],
         createdAt: new Date().toISOString(),
+        isError: true,
       };
 
       set((state) => ({

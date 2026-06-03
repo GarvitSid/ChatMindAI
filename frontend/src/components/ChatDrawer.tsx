@@ -14,6 +14,7 @@ import {
   ChevronRight,
   ShieldCheck,
   PanelLeft,
+  AlertCircle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -258,8 +259,14 @@ export const ChatDrawer: React.FC = () => {
                       }`}
                     >
                       {msg.role === 'ai' && (
-                        <div className="w-8 h-8 rounded-lg bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center text-indigo-300 shrink-0 text-xs">
-                          <Bot className="w-4 h-4" />
+                        <div
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-xs ${
+                            msg.isError
+                              ? 'bg-rose-500/20 border border-rose-500/40 text-rose-400'
+                              : 'bg-indigo-600/30 border border-indigo-500/40 text-indigo-300'
+                          }`}
+                        >
+                          {msg.isError ? <AlertCircle className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
                         </div>
                       )}
 
@@ -267,10 +274,24 @@ export const ChatDrawer: React.FC = () => {
                         className={`max-w-[82%] sm:max-w-[75%] rounded-2xl p-4 text-xs sm:text-sm leading-relaxed ${
                           msg.role === 'user'
                             ? 'bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-br-none shadow-md shadow-indigo-600/20'
+                            : msg.isError
+                            ? 'bg-rose-950/20 text-rose-200 border border-rose-500/30 rounded-bl-none shadow-md'
                             : 'bg-slate-900 text-slate-200 border border-slate-800 rounded-bl-none shadow-md'
                         }`}
                       >
                         <div className="whitespace-pre-wrap">{msg.content}</div>
+
+                        {/* Guardrail Refusal Notice */}
+                        {msg.role === 'ai' &&
+                          !msg.isError &&
+                          msg.content.includes('Relevant information is unavailable') && (
+                            <div className="mt-3 pt-2.5 border-t border-slate-800/80 text-[11px] text-amber-400/90 flex items-start gap-1.5 bg-amber-500/5 p-2 rounded-lg">
+                              <ShieldCheck className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                              <span>
+                                <strong>Grounded RAG Guardrail:</strong> Question did not meet confidence threshold (0.55). Ensure relevant college handbooks are uploaded in the Admin portal.
+                              </span>
+                            </div>
+                          )}
 
                         {/* Render small "Source: [filename]" badge below AI text */}
                         {msg.role === 'ai' && msg.sources && msg.sources.length > 0 && (
