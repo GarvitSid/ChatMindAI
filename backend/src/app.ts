@@ -29,12 +29,29 @@ const allowedOrigins = Array.from(
 );
 
 // 1. Security Headers
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 
 // 2. CORS Restriction
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, Render health checks)
+      if (!origin) return callback(null, true);
+
+      // Check explicitly configured origins
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+
+      // Allow any Vercel preview or production deployment for this app
+      if (/^https:\/\/.*\.vercel\.app$/i.test(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(null, false);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
